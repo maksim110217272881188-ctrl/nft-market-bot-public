@@ -14,11 +14,11 @@ from telegram.ext import (
 logging.basicConfig(level=logging.INFO)
 
 TOKEN = os.getenv("BOT_TOKEN", "")
-ADMIN_IDS = [
+ADMIN_IDS = {
     int(x.strip())
     for x in os.getenv("ADMIN_IDS", "").split(",")
     if x.strip().isdigit()
-]
+}
 
 LOTS = [
     {
@@ -36,6 +36,10 @@ LOTS = [
         "description": "Редкий цифровой подарок",
     },
 ]
+
+
+def is_admin(user_id):
+    return user_id in ADMIN_IDS
 
 
 def main_menu():
@@ -76,12 +80,107 @@ def lot_keyboard(lot_id):
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
+    text = (
         "💎 Добро пожаловать в NFT Market!\n\n"
         "Выбирай лот и отправляй заявку продавцу.\n"
-        "Оплата пока не автоматическая.",
-        reply_markup=main_menu(),
+        "Оплата пока не автоматическая."
     )
+    if is_admin(update.effective_user.id):
+        text += (
+            "\n\n🛠 Админ-команды:\n"
+            "/addlot название | TON | Stars | описание\n"
+            "/dellot ID\n"
+            "/lots"
+        )
+    await update.message.reply_text(text, reply_markup=main_menu())
+
+
+async def addlot(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text("⛔ Нет доступа.")
+        return
+
+    raw = update.message.text.partition(" ")[2].strip()
+    parts = [p.strip() for p in raw.split("|")]
+
+    if len(parts) != 4 or not all(parts):
+        await update.message.reply_text(
+            "Формат:\n"
+            "/addlot Название | цена TON | цена Stars | описание\n\n"
+            "Пример:\n"
+            "/addlot Rare Gift | 5 | 350 | Редкий подарок"
+        )
+        return
+
+    name, ton, stars, description = parts
+
+    try:
+        if float(ton) <= 0 or float(stars) <= 0:
+            raise ValueError
+    except ValueError:
+        await update.message.reply_text(
+            "❌ Обе цены должны быть числами больше нуля."
+        )
+        return
+
+    next_id = str(max((int(x["id"]) for x in LOTS), default=0) + 1)
+    LOTS.append({
+        "id": next_id,
+        "name": name,
+        "ton": ton,
+        "stars": stars,
+        "description": description,
+    })
+
+    await update.message.reply_text(
+        f"✅ Лот добавлен!\n"
+        f"ID: {next_id}\n"
+        f"Название: {name}\n"
+        f"Цена: {ton} TON / ⭐ {stars} Stars"
+    )
+
+
+async def dellot(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text("⛔ Нет доступа.")
+        return
+
+    if not context.args:
+        await update.message.reply_text(
+            "Укажи ID лота.\nПример: /dellot 2"
+        )
+        return
+
+    lot_id = context.args[0]
+    lot = next((x for x in LOTS if x["id"] == lot_id), None)
+
+    if lot is None:
+        await update.message.reply_text("❌ Лот с таким ID не найден.")
+        return
+
+    LOTS.remove(lot)
+    await update.message.reply_text(
+        f"🗑 Лот «{lot['name']}» удалён из каталога."
+    )
+
+
+async def lots_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text("⛔ Нет доступа.")
+        return
+
+    if not LOTS:
+        await update.message.reply_text("Каталог пока пуст.")
+        return
+
+    text = "💎 Текущие лоты:\n\n"
+    for lot in LOTS:
+        text += (
+            f"ID: {lot['id']}\n"
+            f"Название: {lot['name']}\n"
+            f"Цена: {lot['ton']} TON / ⭐ {lot['stars']} Stars\n\n"
+        )
+    await update.message.reply_text(text)
 
 
 async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -105,8 +204,7 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data == "about":
         await query.edit_message_text(
-            "💎 NFT Market\n"
-            "Каталог цифровых коллекционных лотов.\n"
+            "💎 NFT Market\nКаталог цифровых коллекционных лотов.\n"
             "Заявки отправляются администратору.",
             reply_markup=main_menu(),
         )
@@ -114,15 +212,13 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data.startswith("lot:"):
         lot_id = data.split(":", 1)[1]
-        lot = next((item for item in LOTS if item["id"] == lot_id), None)
-
-        if lot is None:
+        lot = next((x for x in LOTS if x["id"] == lot_id), None)
+        if not lot:
             await query.message.reply_text("Лот не найден.")
             return
 
         await query.edit_message_text(
-            f"💎 {lot['name']}\n\n"
-            f"{lot['description']}\n\n"
+            f"💎 {lot['name']}\n\n{lot['description']}\n\n"
             f"Цена: {lot['ton']} TON\n"
             f"Цена: ⭐ {lot['stars']} Stars\n\n"
             "Выбери валюту для заявки:",
@@ -132,9 +228,8 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data.startswith(("buyton:", "buystars:")):
         kind, lot_id = data.split(":", 1)
-        lot = next((item for item in LOTS if item["id"] == lot_id), None)
-
-        if lot is None:
+        lot = next((x for x in LOTS if x["id"] == lot_id), None)
+        if not lot:
             await query.message.reply_text("Лот не найден.")
             return
 
@@ -154,7 +249,7 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if not ADMIN_IDS:
             await query.message.reply_text(
-                "Администратор ещё не настроен. Попробуй позже."
+                "Администратор ещё не настроен."
             )
             return
 
@@ -189,6 +284,9 @@ def main():
 
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("addlot", addlot))
+    app.add_handler(CommandHandler("dellot", dellot))
+    app.add_handler(CommandHandler("lots", lots_command))
     app.add_handler(CallbackQueryHandler(button))
     app.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND, unknown_text)
@@ -198,4 +296,4 @@ def main():
 
 if __name__ == "__main__":
     main()
-                              
+        
